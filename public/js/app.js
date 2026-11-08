@@ -79,6 +79,7 @@ class App {
       paper: null,
       strategies: {},
       workspaces: [],
+      activeWorkspace: null,
       ...state,
     };
     this.state.workspaces ||= [];
@@ -88,6 +89,8 @@ class App {
       bars: 3000,
       utc: false,
       stayInDrawMode: false,
+      syncSymbol: false,
+      syncTf: false,
       syncCrosshair: false,
       dailySrc: "auto",
       intradaySrc: "auto",
@@ -208,7 +211,9 @@ class App {
       grid.appendChild(el);
       const base = cfgs[i] || {
         ...structuredClone(cfgs[0] || {}),
-        tf: tfs[i % tfs.length],
+        tf: this.settings.syncTf
+          ? cfgs[0]?.tf || this.active?.cfg.tf || "1D"
+          : tfs[i % tfs.length],
         indicators: [],
       };
       const pane = new ChartPane(this, el, base);
@@ -304,6 +309,11 @@ class App {
       this.settings.syncSymbol = e.target.checked;
       this.persist();
     };
+    $("#syncTf").checked = !!this.settings.syncTf;
+    $("#syncTf").onchange = (e) => {
+      this.settings.syncTf = e.target.checked;
+      this.persist();
+    };
     $("#replayBtn").onclick = () => {
       if (this.active.replay) return this.active.stopReplay();
       this.setTool("replay-pick");
@@ -358,8 +368,11 @@ class App {
   }
 
   setTf(tf) {
-    this.active.cfg.tf = tf;
-    this.active.load();
+    const targets = this.settings.syncTf ? this.panes : [this.active];
+    for (const p of targets) {
+      p.cfg.tf = tf;
+      p.load();
+    }
     this.syncToolbar();
     this.persist();
   }
@@ -585,13 +598,51 @@ class App {
           `<label class="field">${esc(o.label)}<input data-c="${o.key}" type="color" value="${(ind.colors?.[o.key] || o.color).slice(0, 7)}"></label>`,
       )
       .join("");
+    const zoneRow = (z = {}) => {
+      const outs = def.outputs;
+      const opts = (sel) =>
+        outs
+          .map(
+            (o) =>
+              `<option value="${esc(o.key)}" ${o.key === sel ? "selected" : ""}>${esc(o.label)}</option>`,
+          )
+          .join("");
+      const from = z.from || outs[0]?.key;
+      const to = z.to || outs[1]?.key || outs[0]?.key;
+      const op = Math.round(
+        (Number.isFinite(z.opacity) ? z.opacity : 0.18) * 100,
+      );
+      return `<div class="zone-row"><label class="field">Fill from<select data-zfrom>${opts(from)}</select></label><label class="field">to<select data-zto>${opts(to)}</select></label><label class="field">Colour<input data-zcolor type="color" value="${(z.color || "#2962ff").slice(0, 7)}"></label><label class="field">Opacity<input data-zop type="range" min="0" max="100" step="1" value="${op}"><span class="zone-op">${op}%</span></label><button class="btn small danger" type="button" data-zdel title="Remove this zone">Remove</button></div>`;
+    };
+    const zoneSection =
+      def.outputs.length >= 2
+        ? `<h4>Zones between lines</h4><div id="zoneRows">${(ind.zones || []).map(zoneRow).join("")}</div><button class="btn small" type="button" data-addzone>Add zone</button><p class="hint-text">Fill the area between two outputs of this indicator. Opacity 0% is invisible, 100% is solid.</p>`
+        : "";
     const card = this.modal(
       def.name,
-      `<div class="form-grid">${fields || '<span class="hint-text">No inputs.</span>'}<label class="field">Timeframe<select data-tf>${["", "5m", "15m", "1h", "4h", "1D", "1W", "1M"].map((t) => `<option value="${t}" ${(ind.tf || "") === t ? "selected" : ""}>${t || `Same as chart (${pane.cfg.tf})`}</option>`).join("")}</select></label></div><p class="hint-text">A higher timeframe shows its value once each of its bars has closed, so history never peeks ahead.</p>${colors ? `<h4>Colours</h4><div class="form-grid">${colors}</div>` : ""}`,
+      `<div class="form-grid">${fields || '<span class="hint-text">No inputs.</span>'}<label class="field">Timeframe<select data-tf>${["", "5m", "15m", "1h", "4h", "1D", "1W", "1M"].map((t) => `<option value="${t}" ${(ind.tf || "") === t ? "selected" : ""}>${t || `Same as chart (${pane.cfg.tf})`}</option>`).join("")}</select></label></div><p class="hint-text">A higher timeframe shows its value once each of its bars has closed, so history never peeks ahead.</p>${colors ? `<h4>Colours</h4><div class="form-grid">${colors}</div>` : ""}${zoneSection}`,
       {
         foot: '<button class="btn" data-reset>Defaults</button><button class="btn primary" data-ok>Apply</button>',
       },
     );
+    const zonesBox = card.querySelector("#zoneRows");
+    if (zonesBox) {
+      const syncOpacity = () =>
+        card.querySelectorAll("[data-zop]").forEach((r) => {
+          r.nextElementSibling.textContent = `${r.value}%`;
+        });
+      card.querySelector("[data-addzone]").onclick = () => {
+        zonesBox.insertAdjacentHTML("beforeend", zoneRow({}));
+        syncOpacity();
+      };
+      zonesBox.addEventListener("click", (e) => {
+        if (e.target.closest("[data-zdel]")) e.target.closest(".zone-row").remove();
+      });
+      zonesBox.addEventListener("input", (e) => {
+        if (e.target.matches("[data-zop]"))
+          e.target.nextElementSibling.textContent = `${e.target.value}%`;
+      });
+    }
     card.querySelector("[data-ok]").onclick = () => {
       ind.params = {};
       card.querySelectorAll("[data-k]").forEach((el) => {
@@ -608,6 +659,17 @@ class App {
       card.querySelectorAll("[data-c]").forEach((el) => {
         ind.colors[el.dataset.c] = el.value;
       });
+      ind.zones = [...card.querySelectorAll(".zone-row")]
+        .map((row) => ({
+          from: row.querySelector("[data-zfrom]").value,
+          to: row.querySelector("[data-zto]").value,
+          color: row.querySelector("[data-zcolor]").value,
+          opacity: Math.max(
+            0,
+            Math.min(1, Number(row.querySelector("[data-zop]").value) / 100),
+          ),
+        }))
+        .filter((z) => z.from && z.to && z.from !== z.to);
       ind.tf = card.querySelector("[data-tf]").value || undefined;
       this.closeModal();
       pane.render(false);
@@ -622,6 +684,7 @@ class App {
     card.querySelector("[data-reset]").onclick = () => {
       ind.params = {};
       ind.colors = {};
+      ind.zones = [];
       this.closeModal();
       pane.render(false);
       this.persist();
@@ -670,17 +733,18 @@ class App {
       this.workspaceName(),
     );
     if (!name) return;
+    const all = this.state.workspaces;
+    const at = all.findIndex((w) => w.name === name);
     const ws = {
-      id: newUid(),
+      id: at >= 0 ? all[at].id : newUid(),
       name,
       layout: this.state.layout,
       panes: structuredClone(this.panes.map((p) => p.cfg)),
       at: Date.now(),
     };
-    const all = this.state.workspaces;
-    const at = all.findIndex((w) => w.name === name);
     if (at >= 0) all[at] = ws;
     else all.push(ws);
+    this.state.activeWorkspace = ws.id;
     this.persist();
     this.toast(at >= 0 ? `Updated “${esc(name)}”.` : `Saved “${esc(name)}”.`);
   }
@@ -729,7 +793,15 @@ class App {
   }
 
   // ---------- saved layouts (grid + every chart's symbol and config) ----------
+  currentWorkspace() {
+    return (this.state.workspaces || []).find(
+      (w) => w.id === this.state.activeWorkspace,
+    ) || null;
+  }
+
   workspaceName() {
+    const loaded = this.currentWorkspace();
+    if (loaded) return loaded.name;
     const syms = [...new Set(this.panes.map((p) => ticker(p.cfg.symbol)))];
     if (!syms.length) return "Layout";
     return syms.length > 3
@@ -743,13 +815,13 @@ class App {
       ? list
           .map(
             (w, i) =>
-              `<div class="item" data-ws="${i}"><span><b>${esc(w.name)}</b><br><span class="muted">${esc((w.panes || []).map((p) => ticker(p.symbol)).join(" · "))}</span></span><span class="meta">${(w.panes || []).length} chart${(w.panes || []).length === 1 ? "" : "s"} <button class="btn small" data-act="load">Load</button> <button class="btn small danger" data-act="del">Delete</button></span></div>`,
+              `<div class="item" data-ws="${i}"><span><b>${esc(w.name)}</b>${w.id === this.state.activeWorkspace ? ' <span class="muted">(current)</span>' : ""}<br><span class="muted">${esc((w.panes || []).map((p) => ticker(p.symbol)).join(" · "))}</span></span><span class="meta">${(w.panes || []).length} chart${(w.panes || []).length === 1 ? "" : "s"} <button class="btn small" data-act="load">Load</button> <button class="btn small danger" data-act="del">Delete</button></span></div>`,
           )
           .join("")
       : '<div class="hint-text">No saved layouts yet.</div>';
     const card = this.modal(
       "Layouts",
-      `<div class="list">${rows}</div><div class="form-grid" style="margin-top:12px"><label class="field">Name this layout<input id="wsName" placeholder="${esc(this.workspaceName())}" autocomplete="off"></label></div><p class="hint-text">A saved layout keeps the grid, and every chart's symbol, timeframe, chart type, indicators, compare list and adjusted/raw choice.</p>`,
+      `<div class="list">${rows}</div><div class="form-grid" style="margin-top:12px"><label class="field">Name this layout<input id="wsName" value="${esc(this.workspaceName())}" autocomplete="off"></label></div><p class="hint-text">Saving under the current name updates that layout. A saved layout keeps the grid, and every chart's symbol, timeframe, chart type, indicators, compare list, adjusted/raw choice and indicator zones.</p>`,
       { foot: '<button class="btn primary" data-save>Save current layout</button>' },
     );
     card.querySelectorAll("[data-ws]").forEach((row) => {
@@ -759,6 +831,8 @@ class App {
         const act = e.target.closest("[data-act]")?.dataset.act;
         if (act === "del") {
           this.state.workspaces = list.filter((x) => x !== w);
+          if (this.state.activeWorkspace === w.id)
+            this.state.activeWorkspace = null;
           this.persist();
           this.openWorkspaces();
           this.toast(`Deleted “${esc(w.name)}”.`);
@@ -770,17 +844,18 @@ class App {
     card.querySelector("[data-save]").onclick = () => {
       const typed = card.querySelector("#wsName").value.trim();
       const name = typed || this.workspaceName();
+      const all = this.state.workspaces;
+      const at = all.findIndex((w) => w.name === name);
       const ws = {
-        id: newUid(),
+        id: at >= 0 ? all[at].id : newUid(),
         name,
         layout: this.state.layout,
         panes: structuredClone(this.panes.map((p) => p.cfg)),
         at: Date.now(),
       };
-      const all = this.state.workspaces;
-      const at = all.findIndex((w) => w.name === name);
       if (at >= 0) all[at] = ws;
       else all.push(ws);
+      this.state.activeWorkspace = ws.id;
       this.persist();
       this.closeModal();
       this.toast(
@@ -796,6 +871,7 @@ class App {
     this.state.panes = panes;
     this.state.layout = layout;
     this.state.active = 0;
+    this.state.activeWorkspace = ws.id || null;
     // Reuse the charts already on screen (new ones are created by setLayout); tearing every
     // chart down and building the grid again makes the chart engine resize disposed canvases.
     for (let i = 0; i < Math.min(this.panes.length, count); i++)

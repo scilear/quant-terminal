@@ -13,6 +13,7 @@ import {
 } from "../lib/series.js";
 import { DrawingLayer, TOOL_BY_ID } from "./drawings.js";
 import { VolumeProfile, SessionVolumeProfile } from "./volume-profile.js";
+import { ZoneFill } from "./zones.js";
 
 const LW = window.LightweightCharts;
 
@@ -142,12 +143,20 @@ export class ChartPane {
     this.compareSeries = new Map();
     this.extraMarkers = [];
     this.replay = null;
+    this.indPane = {};
+    this.subLegends = new Map();
+    this.zonePrims = [];
+    this._indSignature = null;
     el.innerHTML =
       '<div class="chart"></div><div class="legend"></div><div class="pane-msg hidden"></div>';
     this.chartEl = el.querySelector(".chart");
     this.legendEl = el.querySelector(".legend");
     this.msgEl = el.querySelector(".pane-msg");
     this.createChart();
+    // Sub-pane labels have to follow the pane separator when it is dragged.
+    this.chart.timeScale().subscribeSizeChange?.(() => this.scheduleLegendLayout());
+    for (const ev of ["pointerdown", "pointermove", "pointerup"])
+      this.chartEl.addEventListener(ev, () => this.scheduleLegendLayout(), { passive: true });
     el.addEventListener("mousedown", () => app.setActive(this), true);
   }
 
@@ -633,6 +642,21 @@ export class ChartPane {
   }
 
   renderIndicators() {
+    const signature = JSON.stringify(this.cfg.indicators);
+    // A live tick does not change any indicator's configuration, so update the existing series in
+    // place. Removing series would delete their panes and abort a separator drag in progress.
+    if (signature === this._indSignature && this.shown.length && this.updateIndicators()) return;
+    this._indSignature = signature;
+    // Pane heights belong to the user: dragging a separator resizes an oscillator pane, so keep
+    // the sizes across the rebuild that every tick triggers.
+    const oldPanes = this.chart.panes();
+    const oldSizes = oldPanes.map((p) => {
+      try {
+        return { height: p.getHeight() };
+      } catch {
+        return null;
+      }
+    });
     for (const list of this.indSeries.values())
       for (const s of list) {
         try { this.chart.removeSeries(s); } catch { /* already gone */ }
@@ -640,6 +664,7 @@ export class ChartPane {
     this.indSeries.clear();
     for (const vp of this.vpPrims || []) { try { this.main.detachPrimitive(vp); } catch { /* gone with the series */ } }
     this.vpPrims = [];
+    this.zonePrims = [];
     while (this.chart.panes().length > 1) this.chart.removePane(this.chart.panes().length - 1);
     this.indResults = {};
     this.mtf ||= {};
@@ -685,6 +710,7 @@ export class ChartPane {
       const pane = parentPane !== undefined ? parentPane : def.overlay ? 0 : ++paneIdx;
       paneOf[ind.uid] = pane;
       const list = [];
+      const seriesByKey = {};
       for (const out of outs) {
         const color = ind.colors?.[out.key] || out.color;
         const opts = {
@@ -702,13 +728,120 @@ export class ChartPane {
         const vals = res[out.key];
         s.setData(out.kind === "histogram" ? histData(vals, res.colors, timeAt, n) : lineData(vals, res.breaks, timeAt, n));
         list.push(s);
+        seriesByKey[out.key] = s;
+      }
+      // Optional fills between two output lines (TradingView-style zones), with their own opacity.
+      for (const z of ind.zones || []) {
+        const a = seriesByKey[z.from], b = seriesByKey[z.to];
+        const da = res[z.from], db = res[z.to];
+        if (!a || !b || !Array.isArray(da) || !Array.isArray(db)) continue;
+        const prim = new ZoneFill(this, {
+          seriesA: a,
+          seriesB: b,
+          dataA: da,
+          dataB: db,
+          color: z.color || "#2962ff",
+          opacity: Number.isFinite(z.opacity) ? z.opacity : 0.18,
+        });
+        a.attachPrimitive(prim);
+        this.zonePrims.push({
+          uid: ind.uid,
+          from: z.from,
+          to: z.to,
+          prim,
+        });
       }
       if (parentPane === undefined)
         for (const lv of def.levels || [])
           list[0].createPriceLine({ price: lv, color: css("--muted"), lineWidth: 1, lineStyle: LW.LineStyle.Dashed, axisLabelVisible: false });
       this.indSeries.set(ind.uid, list);
     }
-    this.chart.panes().forEach((p, i) => p.setStretchFactor(i === 0 ? 1 : 0.28));
+    this.indPane = paneOf;
+    // Restore the user's pane split whenever the pane count is unchanged. Only a new or removed
+    // oscillator gets the default 1 : 0.28 ratio.
+    const panes = this.chart.panes();
+    const sameCount = oldSizes.length === panes.length;
+    if (sameCount) this.queuePaneHeights(oldSizes.map((s) => s?.height));
+    else {
+      this.pendingPaneHeights = null;
+      panes.forEach((p, i) => {
+        try {
+          p.setStretchFactor(i === 0 ? 1 : 0.28);
+        } catch {
+          /* pane went away */
+        }
+      });
+    }
+    this.setMarkers(markers);
+  }
+
+  // Refresh values on the series that are already on screen. Returns false when the indicator
+  // layout changed in a way that needs a rebuild (added, removed, hidden, recoloured...).
+  updateIndicators() {
+    const bars = this.shown,
+      n = bars.length;
+    const timeAt = (i) =>
+      i < n ? this.times[i] : this.times[n - 1] + (i - n + 1) * this.step;
+    this.mtf ||= {};
+    const byUid = new Map(this.cfg.indicators.map((x) => [x.uid, x]));
+    const depth = (x, seen = new Set()) => {
+      const src = String(x.params?.source || "");
+      if (!src.startsWith("ind:") || seen.has(x.uid)) return 0;
+      seen.add(x.uid);
+      const parent = byUid.get(src.split(":")[1]);
+      return parent ? 1 + depth(parent, seen) : 0;
+    };
+    const ordered = [...this.cfg.indicators].sort((x, y) => depth(x) - depth(y));
+    const results = {};
+    for (const ind of ordered) {
+      const def = BY_ID[ind.id];
+      if (!def) continue;
+      try {
+        results[ind.uid] = n ? this.computeIndicator(ind, bars) : {};
+      } catch (e) {
+        results[ind.uid] = { error: e.message };
+      }
+    }
+    for (const ind of ordered) {
+      if (ind.hidden || !n) continue;
+      const def = BY_ID[ind.id];
+      if (!def) continue;
+      const res = results[ind.uid] || {};
+      const outs = def.outputs.filter((o) => Array.isArray(res[o.key]));
+      const list = this.indSeries.get(ind.uid);
+      if (!list || list.length !== outs.length) return false;
+    }
+    this.indResults = results;
+    const markers = [];
+    for (const ind of ordered) {
+      const def = BY_ID[ind.id];
+      if (!def || ind.hidden || !n) continue;
+      const res = results[ind.uid] || {};
+      if (res.markers && !ind.tf) markers.push(...res.markers);
+      const list = this.indSeries.get(ind.uid);
+      const outs = def.outputs.filter((o) => Array.isArray(res[o.key]));
+      outs.forEach((out, k) => {
+        const s = list[k];
+        const vals = res[out.key];
+        s.setData(
+          out.kind === "histogram"
+            ? histData(vals, res.colors, timeAt, n)
+            : lineData(vals, res.breaks, timeAt, n),
+        );
+      });
+    }
+    for (const z of this.zonePrims) {
+      const res = results[z.uid];
+      if (!res) continue;
+      if (!Array.isArray(res[z.from]) || !Array.isArray(res[z.to])) continue;
+      z.prim.dataA = res[z.from];
+      z.prim.dataB = res[z.to];
+    }
+    this.setMarkers(markers);
+    return true;
+  }
+
+  setMarkers(markers) {
     const all = [...markers, ...this.extraMarkers, ...this.corporateMarkers()]
       .map((m) => ({ ...m, time: this.toChart(m.time) }))
       .filter((m) => !this.replay || m.time <= this.times.at(-1));
@@ -832,6 +965,27 @@ export class ChartPane {
       this.app.syncCrosshair(this, p);
   }
 
+  indicatorRow(ind, i) {
+    const def = BY_ID[ind.id];
+    const res = this.indResults[ind.uid] || {};
+    const params = this.indicatorParamsLabel(ind);
+    const vals = res.error
+      ? `<span class="down">${esc(res.error)}</span>`
+      : res.pending
+        ? '<span class="muted">loading…</span>'
+        : def.outputs
+          .map((o) => {
+            const v = res[o.key]?.[i];
+            return Number.isFinite(v)
+              ? `<span style="color:${ind.colors?.[o.key] || o.color}">${fmtPrice(v)}</span>`
+              : "";
+          })
+          .join(" ");
+    const short =
+      /\(([^)]+)\)$/.exec(def.name)?.[1].split(" / ")[0] || def.name;
+    return `<div class="row ind" data-uid="${ind.uid}" style="${ind.hidden ? "opacity:.45" : ""}"><span class="name">${esc(short)} ${esc(params)}</span><span class="vals">${vals}</span><span class="acts"><button data-act="settings" title="Settings">${ICON.gear}</button><button data-act="hide" title="Show/hide">${ICON.eye}</button><button data-act="remove" title="Remove">${ICON.x}</button></span></div>`;
+  }
+
   updateLegend(index = null) {
     const n = this.shown.length;
     const i = index ?? n - 1;
@@ -847,53 +1001,114 @@ export class ChartPane {
     for (const sym of this.cfg.compare) {
       html += `<div class="row ind" data-compare="${esc(sym)}"><span class="name">${esc(ticker(sym))} (compare)</span><span class="acts"><button data-act="rmcompare" title="Remove">${ICON.x}</button></span></div>`;
     }
+    // One block of rows per chart pane: oscillator labels belong to their own sub-chart.
+    const groups = new Map();
     for (const ind of this.cfg.indicators) {
-      const def = BY_ID[ind.id];
-      if (!def) continue;
-      const res = this.indResults[ind.uid] || {};
-      const params = this.indicatorParamsLabel(ind);
-      const vals = res.error
-        ? `<span class="down">${esc(res.error)}</span>`
-        : res.pending
-          ? '<span class="muted">loading…</span>'
-          : def.outputs
-            .map((o) => {
-              const v = res[o.key]?.[i];
-              return Number.isFinite(v)
-                ? `<span style="color:${ind.colors?.[o.key] || o.color}">${fmtPrice(v)}</span>`
-                : "";
-            })
-            .join(" ");
-      const short =
-        /\(([^)]+)\)$/.exec(def.name)?.[1].split(" / ")[0] || def.name;
-      html += `<div class="row ind" data-uid="${ind.uid}" style="${ind.hidden ? "opacity:.45" : ""}"><span class="name">${esc(short)} ${esc(params)}</span><span class="vals">${vals}</span><span class="acts"><button data-act="settings" title="Settings">${ICON.gear}</button><button data-act="hide" title="Show/hide">${ICON.eye}</button><button data-act="remove" title="Remove">${ICON.x}</button></span></div>`;
+      if (!BY_ID[ind.id]) continue;
+      const pane = this.indPane[ind.uid] ?? 0;
+      if (!groups.has(pane)) groups.set(pane, []);
+      groups.get(pane).push(this.indicatorRow(ind, i));
     }
+    html += (groups.get(0) || []).join("");
     for (const note of this.notes || [])
       html += `<div class="row note">${esc(note)}</div>`;
     this.legendEl.innerHTML = html;
-    this.legendEl.onclick = (e) => {
-      const btn = e.target.closest("[data-act]");
-      if (!btn) return;
-      const act = btn.dataset.act;
-      if (act === "symbol") return this.app.openSymbolSearch();
-      if (act === "rmcompare") {
-        this.cfg.compare = this.cfg.compare.filter(
-          (s) => s !== btn.closest("[data-compare]").dataset.compare,
-        );
-        this.app.persist();
-        return this.load({ keepView: true });
+    this.legendEl.onclick = (e) => this.legendAction(e);
+    const wanted = new Set([...groups.keys()].filter((k) => k > 0));
+    for (const [pane, el] of this.subLegends) {
+      if (wanted.has(pane)) continue;
+      el.remove();
+      this.subLegends.delete(pane);
+    }
+    for (const pane of wanted) {
+      let el = this.subLegends.get(pane);
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "legend sub";
+        el.dataset.pane = pane;
+        el.onclick = (e) => this.legendAction(e);
+        this.el.appendChild(el);
+        this.subLegends.set(pane, el);
       }
-      const uid = btn.closest("[data-uid]")?.dataset.uid;
-      const ind = this.cfg.indicators.find((x) => x.uid === uid);
-      if (!ind) return;
-      if (act === "remove") this.removeIndicator(uid);
-      if (act === "hide") {
-        ind.hidden = !ind.hidden;
-        this.render(false);
-        this.app.persist();
+      el.innerHTML = groups.get(pane).join("");
+    }
+    this.layoutLegends();
+  }
+
+  // Keep each sub-pane label at the top of its own pane, even while the separator is being dragged.
+  layoutLegends() {
+    if (!this.subLegends?.size) return;
+    const panes = this.chart.panes();
+    let top = 0;
+    for (let i = 0; i < panes.length; i++) {
+      if (i > 0) {
+        const el = this.subLegends.get(i);
+        if (el) el.style.top = `${top + 4}px`;
       }
-      if (act === "settings") this.app.openIndicatorSettings(this, ind);
+      try {
+        top += panes[i].getHeight();
+      } catch {
+        break;
+      }
+    }
+  }
+
+  scheduleLegendLayout() {
+    if (this._legendRaf) return;
+    this._legendRaf = requestAnimationFrame(() => {
+      this._legendRaf = null;
+      this.layoutLegends();
+    });
+  }
+
+  // A pane that is re-created during a re-render only gets its final layout on the next frame;
+  // setting its height now would be overwritten. Wait two frames, then restore the user's split.
+  queuePaneHeights(heights) {
+    this.pendingPaneHeights = heights;
+    if (this._paneRestoreRaf) cancelAnimationFrame(this._paneRestoreRaf);
+    let passes = 0;
+    const step = () => {
+      if (++passes < 2) {
+        this._paneRestoreRaf = requestAnimationFrame(step);
+        return;
+      }
+      this._paneRestoreRaf = null;
+      const target = this.pendingPaneHeights;
+      if (!target) return;
+      const panes = this.chart.panes();
+      for (let i = 1; i < panes.length && i < target.length; i++)
+        try {
+          if (target[i]) panes[i].setHeight(target[i]);
+        } catch {
+          /* pane went away */
+        }
+      this.layoutLegends();
     };
+    this._paneRestoreRaf = requestAnimationFrame(step);
+  }
+
+  legendAction(e) {
+    const btn = e.target.closest("[data-act]");
+    if (!btn) return;
+    const act = btn.dataset.act;
+    if (act === "symbol") return this.app.openSymbolSearch();
+    if (act === "rmcompare") {
+      this.cfg.compare = this.cfg.compare.filter(
+        (s) => s !== btn.closest("[data-compare]").dataset.compare,
+      );
+      this.app.persist();
+      return this.load({ keepView: true });
+    }
+    const uid = btn.closest("[data-uid]")?.dataset.uid;
+    const ind = this.cfg.indicators.find((x) => x.uid === uid);
+    if (!ind) return;
+    if (act === "remove") this.removeIndicator(uid);
+    if (act === "hide") {
+      ind.hidden = !ind.hidden;
+      this.render(false);
+      this.app.persist();
+    }
+    if (act === "settings") this.app.openIndicatorSettings(this, ind);
   }
 
   // ---------- indicators ----------
@@ -1280,6 +1495,8 @@ export class ChartPane {
   destroy() {
     this.stopLive();
     clearInterval(this.replayTimer);
+    if (this._legendRaf) cancelAnimationFrame(this._legendRaf);
+    if (this._paneRestoreRaf) cancelAnimationFrame(this._paneRestoreRaf);
     this.chart.remove();
   }
 }

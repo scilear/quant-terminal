@@ -31,8 +31,8 @@ There's no `npm install` step. Next time, double-click `start.command` (Mac), `s
 | 15 chart types | Candles, hollow candles, bars, Heikin Ashi, line, line with markers, step, area, baseline, columns, Renko, line break, range bars, Kagi, point & figure |
 | Spreads and ratios | Type `BTCUSDT/ETHUSDT`, `AAPL - MSFT` or `SPY*2` to chart one symbol against another |
 | Any timeframe | 1m to 1M plus custom ones like 7m, 2h, 3D, 2W. 1-second bars on Binance crypto |
-| Up to 16 charts at once | 1, 2, 3, 4, 6, 8 or 16 charts, with symbol sync and crosshair sync |
-| 87 built-in indicators, no cap per chart | Moving averages, RSI, MACD, Bollinger, Ichimoku, Supertrend, VWAP and anchored VWAP, session and visible-range volume profiles, ADX, pivots, volume tools, candlestick patterns and more. Formulas follow the Pine Script reference |
+| Up to 16 charts at once | 1, 2, 3, 4, 6, 8 or 16 charts, with symbol and timeframe linking and crosshair sync |
+| 87 built-in indicators, no cap per chart | Moving averages, RSI, MACD, Bollinger, Ichimoku, Supertrend, VWAP and anchored VWAP, session and visible-range volume profiles, ADX, pivots, volume tools, candlestick patterns and more. Filled zones between any two indicator lines, with their own colour and opacity |
 | Indicators on indicators, any timeframe | Build one indicator on another's output (an SMA of RSI), or show a higher timeframe's value (daily RSI on a 1h chart) without look-ahead |
 | Volume profile | Visible-range profile with point of control and value area |
 | Your own indicators | Write one in the Indicator editor tab, or ask your AI agent to add a file to `custom/` |

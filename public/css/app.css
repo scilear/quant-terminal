@@ -185,6 +185,30 @@ select.tb option {
   gap: 5px;
   color: var(--muted);
 }
+.link-group {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 2px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  flex: none;
+}
+.link-group .tb.check {
+  height: 28px;
+  padding: 0 7px;
+}
+.link-group .tb.check:has(input:checked) {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.link-label {
+  padding: 0 5px 0 4px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 .symbol-btn {
   font-weight: 600;
   font-size: 14px;
@@ -330,6 +354,14 @@ select.tb option {
   pointer-events: none;
   font-size: 12px;
   max-width: calc(100% - 90px);
+}
+/* Indicator labels for an oscillator pane sit in that pane, not over the price chart. */
+.legend.sub {
+  top: 0;
+  font-size: 11.5px;
+}
+.legend.sub .row {
+  line-height: 18px;
 }
 .legend .row {
   display: flex;
@@ -509,6 +541,31 @@ select.tb option {
 .field > input,
 .field > select {
   min-width: 70px;
+}
+.zone-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.zone-row .field {
+  flex: 1 1 110px;
+}
+.zone-row .field:has([data-zop]) {
+  flex: 1 1 160px;
+}
+.zone-row input[type="range"] {
+  width: 100%;
+  min-width: 90px;
+  accent-color: var(--accent);
+}
+.zone-op {
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 30px;
+  display: inline-block;
 }
 input.in,
 select.in,

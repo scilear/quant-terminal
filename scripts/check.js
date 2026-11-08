@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const tests = ['indicators', 'series', 'backtest', 'server', 'reference', 'providers', 'ptq', 'quant'].map((t) => path.join(root, 'test', `${t}.test.js`));
+const tests = ['indicators', 'series', 'backtest', 'server', 'reference', 'providers', 'ptq', 'quant', 'zones'].map((t) => path.join(root, 'test', `${t}.test.js`));
 const steps = [
   ['Offline tests', [process.execPath, '--test', ...tests]],
   ['Data sources', [process.execPath, path.join(root, 'scripts', 'doctor.js')]],
