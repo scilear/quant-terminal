@@ -712,19 +712,30 @@ export class ChartPane {
       const list = [];
       const seriesByKey = {};
       for (const out of outs) {
+        const st = ind.styles?.[out.key] || {};
         const color = ind.colors?.[out.key] || out.color;
+        const shown = st.visible !== false;
+        const lineWidth = st.lineWidth ?? out.lineWidth ?? 1;
+        const lineStyle = st.lineStyle ?? 0;
         const opts = {
           ...(def.noAutoscale ? { autoscaleInfoProvider: () => null } : {}),
           ...(def.volumeFormat ? { priceFormat: { type: "volume" } } : {}),
           color,
           priceLineVisible: false,
-          lastValueVisible: pane > 0,
+          lastValueVisible: (st.axisLabel ?? pane > 0) && shown,
           crosshairMarkerVisible: false,
           title: "",
         };
         const s = out.kind === "histogram"
-          ? this.chart.addSeries(LW.HistogramSeries, opts, pane)
-          : this.chart.addSeries(LW.LineSeries, { ...opts, lineWidth: out.lineWidth || 1, ...(out.dots ? { lineVisible: false, pointMarkersVisible: true, pointMarkersRadius: 1.5 } : {}) }, pane);
+          ? this.chart.addSeries(LW.HistogramSeries, { ...opts, visible: shown }, pane)
+          : this.chart.addSeries(LW.LineSeries, {
+              ...opts,
+              lineWidth,
+              lineStyle,
+              lineVisible: shown && !out.dots,
+              pointMarkersVisible: shown && !!out.dots,
+              pointMarkersRadius: out.dots ? 1.5 : undefined,
+            }, pane);
         const vals = res[out.key];
         s.setData(out.kind === "histogram" ? histData(vals, res.colors, timeAt, n) : lineData(vals, res.breaks, timeAt, n));
         list.push(s);
@@ -741,6 +752,7 @@ export class ChartPane {
           dataA: da,
           dataB: db,
           color: z.color || "#2962ff",
+          color2: z.color2 || null,
           opacity: Number.isFinite(z.opacity) ? z.opacity : 0.18,
         });
         a.attachPrimitive(prim);
@@ -974,6 +986,7 @@ export class ChartPane {
       : res.pending
         ? '<span class="muted">loading…</span>'
         : def.outputs
+          .filter((o) => ind.styles?.[o.key]?.statusLine !== false)
           .map((o) => {
             const v = res[o.key]?.[i];
             return Number.isFinite(v)

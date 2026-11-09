@@ -592,11 +592,33 @@ class App {
         return `<label class="field">${esc(i.label)}<input data-k="${i.key}" data-type="${i.type}" type="number" step="${i.type === "int" ? 1 : "any"}" value="${v}"></label>`;
       })
       .join("");
-    const colors = def.outputs
-      .map(
-        (o) =>
-          `<label class="field">${esc(o.label)}<input data-c="${o.key}" type="color" value="${(ind.colors?.[o.key] || o.color).slice(0, 7)}"></label>`,
-      )
+    const LINE_STYLES = [
+      [0, "Solid"],
+      [1, "Dotted"],
+      [2, "Dashed"],
+      [3, "Large dashes"],
+      [4, "Sparse dots"],
+    ];
+    const stylesOf = (key) => ind.styles?.[key] || {};
+    const stylesPane = (pane.indPane?.[ind.uid] ?? 0) > 0;
+    // Style tab: one row per plot with its own visibility, colour, line style and width.
+    const plotRows = def.outputs
+      .map((o) => {
+        const st = stylesOf(o.key);
+        const vis = st.visible !== false;
+        const controls =
+          o.kind === "histogram"
+            ? ""
+            : `<select data-ls="${o.key}" title="Line style">${LINE_STYLES.map(([v, l]) => `<option value="${v}" ${(st.lineStyle ?? 0) === v ? "selected" : ""}>${l}</option>`).join("")}</select><select data-lw="${o.key}" title="Line width">${[1, 2, 3, 4].map((w) => `<option value="${w}" ${(st.lineWidth ?? o.lineWidth ?? 1) === w ? "selected" : ""}>${w}px</option>`).join("")}</select>`;
+        return `<div class="plot-row"><input type="checkbox" data-vis="${o.key}" ${vis ? "checked" : ""} title="Show this plot"><span class="plot-name">${esc(o.label)}</span><input data-c="${o.key}" type="color" value="${(ind.colors?.[o.key] || o.color || "#2962ff").slice(0, 7)}" title="Colour">${controls}</div>`;
+      })
+      .join("");
+    // Visibility tab: where each plot's value is reported.
+    const visibilityRows = def.outputs
+      .map((o) => {
+        const st = stylesOf(o.key);
+        return `<div class="plot-row"><span class="plot-name">${esc(o.label)}</span><label class="axis-label"><input type="checkbox" data-axis="${o.key}" ${(st.axisLabel ?? stylesPane) ? "checked" : ""}> Price scale</label><label class="axis-label"><input type="checkbox" data-stat="${o.key}" ${st.statusLine !== false ? "checked" : ""}> Status line</label></div>`;
+      })
       .join("");
     const zoneRow = (z = {}) => {
       const outs = def.outputs;
@@ -612,19 +634,26 @@ class App {
       const op = Math.round(
         (Number.isFinite(z.opacity) ? z.opacity : 0.18) * 100,
       );
-      return `<div class="zone-row"><label class="field">Fill from<select data-zfrom>${opts(from)}</select></label><label class="field">to<select data-zto>${opts(to)}</select></label><label class="field">Colour<input data-zcolor type="color" value="${(z.color || "#2962ff").slice(0, 7)}"></label><label class="field">Opacity<input data-zop type="range" min="0" max="100" step="1" value="${op}"><span class="zone-op">${op}%</span></label><button class="btn small danger" type="button" data-zdel title="Remove this zone">Remove</button></div>`;
+      const two = !!z.color2;
+      return `<div class="zone-row"><label class="field">Fill from<select data-zfrom>${opts(from)}</select></label><label class="field">to<select data-zto>${opts(to)}</select></label><label class="field">First colour<input data-zcolor type="color" value="${(z.color || "#2962ff").slice(0, 7)}"></label><label class="field">Second colour<input data-zcolor2 type="color" value="${(z.color2 || z.color || "#f23645").slice(0, 7)}" title="Used when the second line is above the first"></label><label class="field">Opacity<input data-zop type="range" min="0" max="100" step="1" value="${op}"><span class="zone-op">${op}%</span></label><label class="axis-label"><input data-zsplit type="checkbox" ${two ? "checked" : ""}> Two colours</label><button class="btn small danger" type="button" data-zdel title="Remove this zone">Remove</button></div>`;
     };
     const zoneSection =
       def.outputs.length >= 2
-        ? `<h4>Zones between lines</h4><div id="zoneRows">${(ind.zones || []).map(zoneRow).join("")}</div><button class="btn small" type="button" data-addzone>Add zone</button><p class="hint-text">Fill the area between two outputs of this indicator. Opacity 0% is invisible, 100% is solid.</p>`
+        ? `<h4>Zones between lines</h4><div id="zoneRows">${(ind.zones || []).map(zoneRow).join("")}</div><button class="btn small" type="button" data-addzone>Add zone</button><p class="hint-text">Fill the area between two outputs of this indicator. Tick “Two colours” to switch the fill colour depending on which line is above; opacity 0% is invisible, 100% is solid.</p>`
         : "";
     const card = this.modal(
       def.name,
-      `<div class="form-grid">${fields || '<span class="hint-text">No inputs.</span>'}<label class="field">Timeframe<select data-tf>${["", "5m", "15m", "1h", "4h", "1D", "1W", "1M"].map((t) => `<option value="${t}" ${(ind.tf || "") === t ? "selected" : ""}>${t || `Same as chart (${pane.cfg.tf})`}</option>`).join("")}</select></label></div><p class="hint-text">A higher timeframe shows its value once each of its bars has closed, so history never peeks ahead.</p>${colors ? `<h4>Colours</h4><div class="form-grid">${colors}</div>` : ""}${zoneSection}`,
+      `<div class="ind-tabs" role="tablist"><button type="button" class="active" data-itab="inputs">Inputs</button><button type="button" data-itab="style">Style</button><button type="button" data-itab="visibility">Visibility</button></div><div class="ind-panel" data-ipanel="inputs"><div class="form-grid">${fields || '<span class="hint-text">No inputs.</span>'}<label class="field">Timeframe<select data-tf>${["", "5m", "15m", "1h", "4h", "1D", "1W", "1M"].map((t) => `<option value="${t}" ${(ind.tf || "") === t ? "selected" : ""}>${t || `Same as chart (${pane.cfg.tf})`}</option>`).join("")}</select></label></div><p class="hint-text">A higher timeframe shows its value once each of its bars has closed, so history never peeks ahead.</p></div><div class="ind-panel hidden" data-ipanel="style"><h4>Plots</h4>${plotRows}${zoneSection}</div><div class="ind-panel hidden" data-ipanel="visibility"><h4>Output values</h4>${visibilityRows}<p class="hint-text">“Price scale” shows the last value next to the axis. “Status line” shows live values in the chart legend.</p></div>`,
       {
         foot: '<button class="btn" data-reset>Defaults</button><button class="btn primary" data-ok>Apply</button>',
       },
     );
+    card.querySelectorAll("[data-itab]").forEach((b) => {
+      b.onclick = () => {
+        card.querySelectorAll("[data-itab]").forEach((x) => x.classList.toggle("active", x === b));
+        card.querySelectorAll("[data-ipanel]").forEach((p) => p.classList.toggle("hidden", p.dataset.ipanel !== b.dataset.itab));
+      };
+    });
     const zonesBox = card.querySelector("#zoneRows");
     if (zonesBox) {
       const syncOpacity = () =>
@@ -659,11 +688,21 @@ class App {
       card.querySelectorAll("[data-c]").forEach((el) => {
         ind.colors[el.dataset.c] = el.value;
       });
+      ind.styles = {};
+      const styleOf = (key) => (ind.styles[key] ||= {});
+      card.querySelectorAll("[data-vis]").forEach((el) => (styleOf(el.dataset.vis).visible = el.checked));
+      card.querySelectorAll("[data-ls]").forEach((el) => (styleOf(el.dataset.ls).lineStyle = Number(el.value)));
+      card.querySelectorAll("[data-lw]").forEach((el) => (styleOf(el.dataset.lw).lineWidth = Number(el.value)));
+      card.querySelectorAll("[data-axis]").forEach((el) => (styleOf(el.dataset.axis).axisLabel = el.checked));
+      card.querySelectorAll("[data-stat]").forEach((el) => (styleOf(el.dataset.stat).statusLine = el.checked));
       ind.zones = [...card.querySelectorAll(".zone-row")]
         .map((row) => ({
           from: row.querySelector("[data-zfrom]").value,
           to: row.querySelector("[data-zto]").value,
           color: row.querySelector("[data-zcolor]").value,
+          color2: row.querySelector("[data-zsplit]").checked
+            ? row.querySelector("[data-zcolor2]").value
+            : undefined,
           opacity: Math.max(
             0,
             Math.min(1, Number(row.querySelector("[data-zop]").value) / 100),
@@ -684,6 +723,7 @@ class App {
     card.querySelector("[data-reset]").onclick = () => {
       ind.params = {};
       ind.colors = {};
+      ind.styles = {};
       ind.zones = [];
       this.closeModal();
       pane.render(false);

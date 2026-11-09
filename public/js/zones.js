@@ -19,6 +19,8 @@ export class ZoneFill {
     this.dataA = opts.dataA;
     this.dataB = opts.dataB;
     this.fill = withAlpha(opts.color, opts.opacity);
+    // Optional second colour: used when line B is above line A, like TradingView's two-tone fill.
+    this.fill2 = opts.color2 ? withAlpha(opts.color2, opts.opacity) : null;
     this._view = {
       zOrder: () => "bottom",
       renderer: () => ({
@@ -39,6 +41,17 @@ export class ZoneFill {
     return [this._view];
   }
 
+  _band(ctx, run, fill) {
+    if (run.length < 2) return;
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.moveTo(run[0].x, run[0].ya);
+    for (let k = 1; k < run.length; k++) ctx.lineTo(run[k].x, run[k].ya);
+    for (let k = run.length - 1; k >= 0; k--) ctx.lineTo(run[k].x, run[k].yb);
+    ctx.closePath();
+    ctx.fill();
+  }
+
   draw(ctx) {
     const chart = this.pane.chart;
     const ts = chart.timeScale();
@@ -53,35 +66,76 @@ export class ZoneFill {
     const to = Math.min(n - 1, Math.ceil(range.to));
     if (to <= from) return;
 
-    ctx.fillStyle = this.fill;
-    let run = [];
-    const flush = () => {
-      if (run.length > 1) {
-        ctx.beginPath();
-        ctx.moveTo(run[0].x, run[0].ya);
-        for (let k = 1; k < run.length; k++) ctx.lineTo(run[k].x, run[k].ya);
-        for (let k = run.length - 1; k >= 0; k--)
-          ctx.lineTo(run[k].x, run[k].yb);
-        ctx.closePath();
-        ctx.fill();
-      }
-      run = [];
-    };
+    const pts = [];
     for (let i = from; i <= to; i++) {
       const va = this.dataA[i],
         vb = this.dataB[i];
       if (!Number.isFinite(va) || !Number.isFinite(vb)) {
-        flush();
+        pts.push(null);
         continue;
       }
       const x = ts.logicalToCoordinate(i);
       const ya = this.seriesA.priceToCoordinate(va);
       const yb = this.seriesB.priceToCoordinate(vb);
       if (x == null || ya == null || yb == null) {
-        flush();
+        pts.push(null);
         continue;
       }
-      run.push({ x, ya, yb });
+      pts.push({ x, ya, yb, above: va >= vb });
+    }
+
+    if (!this.fill2) {
+      // Single colour: one polygon per contiguous run of valid values.
+      let run = [];
+      for (const p of pts) {
+        if (p) run.push(p);
+        else {
+          this._band(ctx, run, this.fill);
+          run = [];
+        }
+      }
+      this._band(ctx, run, this.fill);
+      return;
+    }
+
+    // Two colours: split each run exactly where the lines cross, so the band changes colour at
+    // the crossing point instead of switching on a whole bar.
+    let run = [];
+    let side = null;
+    let prev = null;
+    const flush = () => {
+      this._band(ctx, run, side ? this.fill : this.fill2);
+      run = [];
+    };
+    for (const p of pts) {
+      if (!p) {
+        flush();
+        side = null;
+        prev = null;
+        continue;
+      }
+      if (side === null) {
+        side = p.above;
+        run = [p];
+        prev = p;
+        continue;
+      }
+      if (p.above !== side) {
+        const dPrev = Math.abs(prev.ya - prev.yb);
+        const dCur = Math.abs(p.ya - p.yb);
+        const t = dPrev + dCur ? dPrev / (dPrev + dCur) : 0;
+        const cross = {
+          x: prev.x + (p.x - prev.x) * t,
+          ya: prev.ya + (p.ya - prev.ya) * t,
+          yb: prev.yb + (p.yb - prev.yb) * t,
+          above: side,
+        };
+        run.push(cross);
+        flush();
+        side = p.above;
+        run = [cross, p];
+      } else run.push(p);
+      prev = p;
     }
     flush();
   }

@@ -49,3 +49,76 @@ test("ZoneFill draws one band for each contiguous run of values", () => {
   assert.equal(ctx.fills, 2);
   assert.equal(ctx.fillStyle, "rgba(41,98,255,0.2)");
 });
+
+test("ZoneFill switches colour where the two lines cross", () => {
+  const pane = {
+    times: [1, 2, 3],
+    chart: {
+      timeScale: () => ({
+        getVisibleLogicalRange: () => ({ from: 0, to: 2 }),
+        logicalToCoordinate: (i) => i * 10,
+      }),
+    },
+  };
+  const seriesA = { priceToCoordinate: (v) => 100 - v };
+  const seriesB = { priceToCoordinate: (v) => 120 - v };
+  const seen = [];
+  const ctx = {
+    fillStyle: "",
+    beginPath() {},
+    moveTo() {},
+    lineTo() {},
+    closePath() {},
+    fill() {
+      seen.push(this.fillStyle);
+    },
+  };
+  const zone = new ZoneFill(pane, {
+    seriesA,
+    seriesB,
+    dataA: [1, 3, 1],
+    dataB: [2, 1, 2],
+    color: "#089981",
+    color2: "#f23645",
+    opacity: 0.5,
+  });
+  zone.draw(ctx);
+  // B above A, then A above B, then B above A: three bands split at both crossings.
+  assert.deepEqual(seen, [
+    "rgba(242,54,69,0.5)",
+    "rgba(8,153,129,0.5)",
+    "rgba(242,54,69,0.5)",
+  ]);
+});
+
+test("ZoneFill skips a lone value that has no neighbour to fill against", () => {
+  const pane = {
+    times: [1, 2, 3],
+    chart: {
+      timeScale: () => ({
+        getVisibleLogicalRange: () => ({ from: 0, to: 2 }),
+        logicalToCoordinate: (i) => i * 10,
+      }),
+    },
+  };
+  let fills = 0;
+  const ctx = {
+    beginPath() {},
+    moveTo() {},
+    lineTo() {},
+    closePath() {},
+    fill() {
+      fills++;
+    },
+  };
+  const zone = new ZoneFill(pane, {
+    seriesA: { priceToCoordinate: (v) => 100 - v },
+    seriesB: { priceToCoordinate: (v) => 100 - v },
+    dataA: [NaN, 1, NaN],
+    dataB: [NaN, 2, NaN],
+    color: "#2962ff",
+    opacity: 0.2,
+  });
+  zone.draw(ctx);
+  assert.equal(fills, 0);
+});

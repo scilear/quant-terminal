@@ -330,6 +330,9 @@ select.tb option {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  /* The charting engine paints its pane separators with z-index 50. Keep those inside the pane,
+     otherwise a separator can sit on top of dialogs and steal clicks from their buttons. */
+  isolation: isolate;
 }
 .pane.active::after {
   content: "";
@@ -543,18 +546,25 @@ select.tb option {
   min-width: 70px;
 }
 .zone-row {
-  display: flex;
-  align-items: flex-end;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
-  flex-wrap: wrap;
+  align-items: end;
   padding: 8px 0;
   border-top: 1px solid var(--border);
 }
 .zone-row .field {
-  flex: 1 1 110px;
+  flex: initial;
+  min-width: 0;
 }
 .zone-row .field:has([data-zop]) {
-  flex: 1 1 160px;
+  grid-column: 1 / -1;
+}
+.zone-row .axis-label {
+  align-self: center;
+}
+.zone-row [data-zdel] {
+  justify-self: end;
 }
 .zone-row input[type="range"] {
   width: 100%;
@@ -566,6 +576,82 @@ select.tb option {
   color: var(--muted);
   min-width: 30px;
   display: inline-block;
+}
+/* Settings dialog tabs: Inputs / Style / Visibility, like TradingView's indicator dialog. */
+.ind-tabs {
+  display: flex;
+  gap: 2px;
+  margin: -12px -14px 12px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+.ind-tabs button {
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 10px 10px 8px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+.ind-tabs button.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.ind-panel > h4:first-child {
+  margin-top: 0;
+}
+.plot-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+.plot-row:last-child {
+  border-bottom: 0;
+}
+.plot-row > input[type="checkbox"] {
+  flex: none;
+  accent-color: var(--accent);
+}
+.plot-row .plot-name {
+  flex: 1 1 auto;
+  min-width: 60px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plot-row input[type="color"] {
+  flex: none;
+  width: 34px;
+  height: 26px;
+  padding: 0 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--input);
+  cursor: pointer;
+}
+.plot-row select {
+  flex: none;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--input);
+  color: var(--text);
+  font-size: 12px;
+}
+.plot-row .axis-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+}
+.plot-row input[type="checkbox"] {
+  accent-color: var(--accent);
 }
 input.in,
 select.in,
