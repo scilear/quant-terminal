@@ -8,6 +8,7 @@ import {
   compute,
 } from "../lib/indicators.js";
 import { parseTf, isIntraday, toCsv } from "../lib/series.js";
+import { contrastingColor } from "./zones.js";
 import { initPanels } from "./panels.js";
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -80,9 +81,11 @@ class App {
       strategies: {},
       workspaces: [],
       activeWorkspace: null,
+      indicatorDefaults: {},
       ...state,
     };
     this.state.workspaces ||= [];
+    this.state.indicatorDefaults ||= {};
     this.settings = {
       theme: "dark",
       volume: true,
@@ -425,8 +428,9 @@ class App {
   }
 
   // ---------- modals ----------
-  modal(title, bodyHtml, { foot = "", wide = false } = {}) {
+  modal(title, bodyHtml, { foot = "", wide = false, onClose = null } = {}) {
     const card = $("#modalCard");
+    this._modalOnClose = onClose;
     card.style.width = wide ? "min(780px, 96vw)" : "";
     card.innerHTML = `<div class="modal-head"><span>${esc(title)}</span><button data-close title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><div class="modal-body">${bodyHtml}</div>${foot ? `<div class="modal-foot">${foot}</div>` : ""}`;
     $("#modal").classList.remove("hidden");
@@ -437,8 +441,11 @@ class App {
     return card;
   }
   closeModal() {
+    const onClose = this._modalOnClose;
+    this._modalOnClose = null;
     $("#modal").classList.add("hidden");
     $("#modalCard").innerHTML = "";
+    onClose?.();
   }
 
   openSymbolSearch(initial = "", onPick = null, title = "Symbol search") {
@@ -634,18 +641,50 @@ class App {
       const op = Math.round(
         (Number.isFinite(z.opacity) ? z.opacity : 0.18) * 100,
       );
-      const two = !!z.color2;
-      return `<div class="zone-row"><label class="field">Fill from<select data-zfrom>${opts(from)}</select></label><label class="field">to<select data-zto>${opts(to)}</select></label><label class="field">First colour<input data-zcolor type="color" value="${(z.color || "#2962ff").slice(0, 7)}"></label><label class="field">Second colour<input data-zcolor2 type="color" value="${(z.color2 || z.color || "#f23645").slice(0, 7)}" title="Used when the second line is above the first"></label><label class="field">Opacity<input data-zop type="range" min="0" max="100" step="1" value="${op}"><span class="zone-op">${op}%</span></label><label class="axis-label"><input data-zsplit type="checkbox" ${two ? "checked" : ""}> Two colours</label><button class="btn small danger" type="button" data-zdel title="Remove this zone">Remove</button></div>`;
+      const first = (z.color || "#2962ff").slice(0, 7);
+      // Keep the second colour even while "Two colours" is off, otherwise switching it back on
+      // would silently restart from the first colour. A second colour that is identical to the
+      // first (zones saved by the old dialog could end up like that) is useless, so show — and
+      // later save — a colour that actually differs.
+      const stored = (z.color2 || "").slice(0, 7);
+      const second =
+        stored && stored.toLowerCase() !== first.toLowerCase()
+          ? stored
+          : contrastingColor(first);
+      const two = z.split ?? !!z.color2;
+      return `<div class="zone-row"><label class="field">Fill from<select data-zfrom>${opts(from)}</select></label><label class="field">to<select data-zto>${opts(to)}</select></label><label class="field">First colour<input data-zcolor type="color" value="${first}"></label><label class="field">Second colour<input data-zcolor2 type="color" value="${second}" title="Used when the second line is above the first"></label><label class="field">Opacity<input data-zop type="range" min="0" max="100" step="1" value="${op}"><span class="zone-op">${op}%</span></label><div class="zone-actions"><label class="axis-label"><input data-zsplit type="checkbox" ${two ? "checked" : ""}> Two colours</label><button class="btn small" type="button" data-zswap title="Swap the two colours">Swap colours</button><button class="btn small danger" type="button" data-zdel title="Remove this zone">Remove</button></div></div>`;
     };
     const zoneSection =
       def.outputs.length >= 2
-        ? `<h4>Zones between lines</h4><div id="zoneRows">${(ind.zones || []).map(zoneRow).join("")}</div><button class="btn small" type="button" data-addzone>Add zone</button><p class="hint-text">Fill the area between two outputs of this indicator. Tick “Two colours” to switch the fill colour depending on which line is above; opacity 0% is invisible, 100% is solid.</p>`
+        ? `<h4>Zones between lines</h4><div id="zoneRows">${(ind.zones || []).map(zoneRow).join("")}</div><button class="btn small" type="button" data-addzone>Add zone</button><p class="hint-text">Fill the area between two outputs of this indicator. Tick “Two colours” to switch the fill colour depending on which line is above; use “Swap colours” when the two lines never cross and you want the other colour. Opacity 0% is invisible, 100% is solid.</p>`
         : "";
+    const savedDefault = this.state.indicatorDefaults?.[ind.id];
+    // Snapshot so closing the dialog without Apply can put the chart back as it was.
+    const original = structuredClone({
+      params: ind.params,
+      colors: ind.colors,
+      styles: ind.styles,
+      zones: ind.zones,
+      tf: ind.tf,
+    });
+    let committed = false;
+    let previewTimer = null;
     const card = this.modal(
       def.name,
       `<div class="ind-tabs" role="tablist"><button type="button" class="active" data-itab="inputs">Inputs</button><button type="button" data-itab="style">Style</button><button type="button" data-itab="visibility">Visibility</button></div><div class="ind-panel" data-ipanel="inputs"><div class="form-grid">${fields || '<span class="hint-text">No inputs.</span>'}<label class="field">Timeframe<select data-tf>${["", "5m", "15m", "1h", "4h", "1D", "1W", "1M"].map((t) => `<option value="${t}" ${(ind.tf || "") === t ? "selected" : ""}>${t || `Same as chart (${pane.cfg.tf})`}</option>`).join("")}</select></label></div><p class="hint-text">A higher timeframe shows its value once each of its bars has closed, so history never peeks ahead.</p></div><div class="ind-panel hidden" data-ipanel="style"><h4>Plots</h4>${plotRows}${zoneSection}</div><div class="ind-panel hidden" data-ipanel="visibility"><h4>Output values</h4>${visibilityRows}<p class="hint-text">“Price scale” shows the last value next to the axis. “Status line” shows live values in the chart legend.</p></div>`,
       {
-        foot: '<button class="btn" data-reset>Defaults</button><button class="btn primary" data-ok>Apply</button>',
+        foot: `<span class="def-note" id="defNote">${savedDefault ? 'Custom default saved <button type="button" class="link def-forget" data-forget>Forget</button>' : "Using factory defaults"}</span><button class="btn" data-savedefault title="Use these settings whenever this indicator is added">Save as default</button><button class="btn" data-reset title="${savedDefault ? "Reset to your saved default" : "Reset to factory defaults"}">Reset</button><button class="btn primary" data-ok>Apply</button>`,
+        onClose: () => {
+          clearTimeout(previewTimer);
+          if (committed) return;
+          ind.params = original.params;
+          ind.colors = original.colors;
+          ind.styles = original.styles;
+          ind.zones = original.zones;
+          ind.tf = original.tf;
+          pane.render(false);
+          this.persist();
+        },
       },
     );
     card.querySelectorAll("[data-itab]").forEach((b) => {
@@ -665,17 +704,40 @@ class App {
         syncOpacity();
       };
       zonesBox.addEventListener("click", (e) => {
-        if (e.target.closest("[data-zdel]")) e.target.closest(".zone-row").remove();
+        if (e.target.closest("[data-zdel]")) {
+          e.target.closest(".zone-row").remove();
+          return;
+        }
+        if (e.target.closest("[data-zswap]")) {
+          const row = e.target.closest(".zone-row");
+          const c1 = row.querySelector("[data-zcolor]");
+          const c2 = row.querySelector("[data-zcolor2]");
+          [c1.value, c2.value] = [c2.value, c1.value];
+          c1.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      });
+      zonesBox.addEventListener("change", (e) => {
+        // Turning two colours on while both swatches hold the same colour looks like nothing
+        // happened, so seed a clearly different second colour.
+        if (e.target.matches("[data-zsplit]") && e.target.checked) {
+          const row = e.target.closest(".zone-row");
+          const c1 = row.querySelector("[data-zcolor]");
+          const c2 = row.querySelector("[data-zcolor2]");
+          if (c1.value.toLowerCase() === c2.value.toLowerCase()) {
+            c2.value = contrastingColor(c1.value);
+            c2.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+        }
       });
       zonesBox.addEventListener("input", (e) => {
         if (e.target.matches("[data-zop]"))
           e.target.nextElementSibling.textContent = `${e.target.value}%`;
       });
     }
-    card.querySelector("[data-ok]").onclick = () => {
-      ind.params = {};
+    const readForm = () => {
+      const params = {};
       card.querySelectorAll("[data-k]").forEach((el) => {
-        ind.params[el.dataset.k] =
+        params[el.dataset.k] =
           el.dataset.type === "time"
             ? el.value
               ? Math.floor(new Date(el.value).getTime() / 1000)
@@ -684,47 +746,106 @@ class App {
               ? Number(el.value)
               : el.value;
       });
-      ind.colors = {};
+      const colors = {};
       card.querySelectorAll("[data-c]").forEach((el) => {
-        ind.colors[el.dataset.c] = el.value;
+        colors[el.dataset.c] = el.value;
       });
-      ind.styles = {};
-      const styleOf = (key) => (ind.styles[key] ||= {});
+      const styles = {};
+      const styleOf = (key) => (styles[key] ||= {});
       card.querySelectorAll("[data-vis]").forEach((el) => (styleOf(el.dataset.vis).visible = el.checked));
       card.querySelectorAll("[data-ls]").forEach((el) => (styleOf(el.dataset.ls).lineStyle = Number(el.value)));
       card.querySelectorAll("[data-lw]").forEach((el) => (styleOf(el.dataset.lw).lineWidth = Number(el.value)));
       card.querySelectorAll("[data-axis]").forEach((el) => (styleOf(el.dataset.axis).axisLabel = el.checked));
       card.querySelectorAll("[data-stat]").forEach((el) => (styleOf(el.dataset.stat).statusLine = el.checked));
-      ind.zones = [...card.querySelectorAll(".zone-row")]
+      const zones = [...card.querySelectorAll(".zone-row")]
         .map((row) => ({
           from: row.querySelector("[data-zfrom]").value,
           to: row.querySelector("[data-zto]").value,
           color: row.querySelector("[data-zcolor]").value,
-          color2: row.querySelector("[data-zsplit]").checked
-            ? row.querySelector("[data-zcolor2]").value
-            : undefined,
+          // Always keep the second colour so unticking "Two colours" does not lose it.
+          color2: row.querySelector("[data-zcolor2]").value,
+          split: row.querySelector("[data-zsplit]").checked,
           opacity: Math.max(
             0,
             Math.min(1, Number(row.querySelector("[data-zop]").value) / 100),
           ),
         }))
         .filter((z) => z.from && z.to && z.from !== z.to);
-      ind.tf = card.querySelector("[data-tf]").value || undefined;
+      return { params, colors, styles, zones };
+    };
+    // Live preview: edits reach the chart immediately, and closing without Apply restores the
+    // snapshot taken when the dialog opened. Debounced so dragging a slider does not rebuild the
+    // panes on every pixel.
+    const applyDraft = () => {
+      const d = readForm();
+      ind.params = d.params;
+      ind.colors = d.colors;
+      ind.styles = d.styles;
+      ind.zones = d.zones;
+      ind.tf = card.querySelector("[data-tf]")?.value || undefined;
+    };
+    const schedulePreview = () => {
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(() => {
+        // A blur/change can arrive just after the dialog closed, when the fields are gone.
+        if (committed || $("#modal").classList.contains("hidden")) return;
+        applyDraft();
+        pane.render(false);
+        this.persist();
+      }, 250);
+    };
+    card.addEventListener("input", schedulePreview);
+    card.addEventListener("change", schedulePreview);
+    const bindForget = () => {
+      const b = card.querySelector("[data-forget]");
+      if (!b) return;
+      b.onclick = () => {
+        delete this.state.indicatorDefaults[ind.id];
+        this.persist();
+        card.querySelector("#defNote").textContent = "Using factory defaults";
+        card.querySelector("[data-reset]").title = "Reset to factory defaults";
+        this.toast(`Default forgotten for ${esc(def.name)}`);
+      };
+    };
+    bindForget();
+    card.querySelector("[data-savedefault]").onclick = () => {
+      this.state.indicatorDefaults[ind.id] = readForm();
+      this.persist();
+      const note = card.querySelector("#defNote");
+      note.innerHTML =
+        'Custom default saved <button type="button" class="link def-forget" data-forget>Forget</button>';
+      bindForget();
+      card.querySelector("[data-reset]").title = "Reset to your saved default";
+      this.toast(`Default saved for ${esc(def.name)}`);
+    };
+    card.querySelector("[data-ok]").onclick = () => {
+      clearTimeout(previewTimer);
+      applyDraft();
+      committed = true;
       this.closeModal();
       pane.render(false);
       this.persist();
     };
     card.querySelectorAll("[data-pick]").forEach((b) => {
       b.onclick = () => {
+        clearTimeout(previewTimer);
+        applyDraft();
+        committed = true;
         this.closeModal();
         this.pickAnchor(pane, ind.uid, b.dataset.pick);
+        this.persist();
       };
     });
     card.querySelector("[data-reset]").onclick = () => {
-      ind.params = {};
-      ind.colors = {};
-      ind.styles = {};
-      ind.zones = [];
+      // "Reset" means the user's saved default when there is one, factory settings otherwise.
+      clearTimeout(previewTimer);
+      committed = true;
+      const d = structuredClone(this.state.indicatorDefaults?.[ind.id] || {});
+      ind.params = d.params || {};
+      ind.colors = d.colors || {};
+      ind.styles = d.styles || {};
+      ind.zones = d.zones || [];
+      ind.tf = undefined;
       this.closeModal();
       pane.render(false);
       this.persist();

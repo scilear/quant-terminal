@@ -752,7 +752,8 @@ export class ChartPane {
           dataA: da,
           dataB: db,
           color: z.color || "#2962ff",
-          color2: z.color2 || null,
+          // `split === false` means one colour only; older zones have no `split` flag at all.
+          color2: z.split === false ? null : z.color2 || null,
           opacity: Number.isFinite(z.opacity) ? z.opacity : 0.18,
         });
         a.attachPrimitive(prim);
@@ -1127,7 +1128,12 @@ export class ChartPane {
   // ---------- indicators ----------
   addIndicator(id, params = {}) {
     const uid = newUid();
-    this.cfg.indicators.push({ uid, id, params });
+    // A saved default from the settings dialog supplies inputs and style for every new instance.
+    const base = structuredClone(this.app.state.indicatorDefaults?.[id] || {});
+    // A source like "ind:<uid>:value" points at one specific indicator, so it cannot be reused
+    // on a different chart; fall back to the close price.
+    if (String(base.params?.source || "").startsWith("ind:")) base.params.source = "close";
+    this.cfg.indicators.push({ uid, id, ...base, params: { ...(base.params || {}), ...params } });
     this.render(false);
     this.app.persist();
     return uid;

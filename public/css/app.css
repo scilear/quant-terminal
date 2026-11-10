@@ -563,8 +563,15 @@ select.tb option {
 .zone-row .axis-label {
   align-self: center;
 }
-.zone-row [data-zdel] {
-  justify-self: end;
+.zone-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.zone-actions [data-zdel] {
+  margin-left: auto;
 }
 .zone-row input[type="range"] {
   width: 100%;
@@ -1009,6 +1016,18 @@ h4 {
   gap: 8px;
   padding: 10px 14px;
   border-top: 1px solid var(--border);
+}
+.def-note {
+  margin-right: auto;
+  align-self: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+.def-forget {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
 }
 .search-in {
   width: 100%;

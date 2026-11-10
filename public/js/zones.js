@@ -11,6 +11,26 @@ export function withAlpha(color, opacity) {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
 }
 
+/**
+ * A colour that reads as clearly different from `color`: the RGB complement, which turns blue into
+ * amber and green into pink. Grey has no useful complement, so fall back to the down red there.
+ */
+export function contrastingColor(color) {
+  let hex = String(color || "").trim().replace(/^#/, "");
+  if (hex.length === 3) hex = hex.split("").map((c) => c + c).join("");
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return "#f23645";
+  const n = parseInt(hex, 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  const cr = 255 - r;
+  const cg = 255 - g;
+  const cb = 255 - b;
+  // Nearly grey input: a complement is nearly grey too, so pick a definite colour instead.
+  if (Math.abs(cr - r) + Math.abs(cg - g) + Math.abs(cb - b) < 120) return "#f23645";
+  return `#${[cr, cg, cb].map((c) => c.toString(16).padStart(2, "0")).join("")}`;
+}
+
 export class ZoneFill {
   constructor(pane, opts) {
     this.pane = pane;

@@ -1,10 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { withAlpha, ZoneFill } from "../public/js/zones.js";
+import { withAlpha, contrastingColor, ZoneFill } from "../public/js/zones.js";
 
 test("withAlpha turns a hex colour into rgba with the requested opacity", () => {
   assert.equal(withAlpha("#2962ff", 0.2), "rgba(41,98,255,0.2)");
   assert.equal(withAlpha("#fff", 0.5), "rgba(255,255,255,0.5)");
+});
+
+test("contrastingColor returns a visibly different hex colour", () => {
+  assert.equal(contrastingColor("#2962ff"), "#d69d00");
+  assert.equal(contrastingColor("#089981"), "#f7667e");
+  assert.equal(contrastingColor("#fff"), "#000000");
+  // Grey has no useful complement, so it falls back to the down red rather than a near-identical grey.
+  assert.equal(contrastingColor("#808080"), "#f23645");
+  assert.equal(contrastingColor("not-a-colour"), "#f23645");
+  assert.equal(contrastingColor(""), "#f23645");
+  for (const c of ["#2962ff", "#f23645", "#089981", "#ff9800", "#787b86"]) {
+    assert.match(contrastingColor(c), /^#[0-9a-f]{6}$/);
+    assert.notEqual(contrastingColor(c).toLowerCase(), c.toLowerCase());
+  }
 });
 
 test("withAlpha clamps opacity and survives bad input", () => {
