@@ -351,7 +351,7 @@ select.tb option {
 }
 .legend {
   position: absolute;
-  left: 8px;
+  left: var(--legend-left, 8px);
   top: 6px;
   z-index: 4;
   pointer-events: none;
@@ -968,6 +968,48 @@ h4 {
   padding: 6px 9px;
   box-shadow: var(--shadow);
   font-size: 12px;
+}
+
+/* price-scale context menu (right-click the Y axis) */
+.scale-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 226px;
+  padding: 5px 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+}
+.scale-menu button {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 12px 7px 6px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.scale-menu button:hover {
+  background: var(--hover);
+}
+.scale-menu .tick {
+  display: inline-block;
+  width: 20px;
+  text-align: center;
+  color: var(--text);
+  font-size: 12px;
+}
+.scale-sep {
+  height: 1px;
+  margin: 5px 0;
+  background: var(--border);
 }
 
 /* modal */

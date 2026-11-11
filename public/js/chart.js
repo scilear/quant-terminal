@@ -239,6 +239,24 @@ export class ChartPane {
       });
     });
     this.drawings = new DrawingLayer(this);
+    // TradingView-style scale menu: right-click the price axis (either side) for autoscale, invert,
+    // scale type and moving the axis.
+    this.chartEl.addEventListener("contextmenu", (e) => {
+      const r = this.chartEl.getBoundingClientRect();
+      const x = e.clientX - r.left;
+      const side = this.scaleSide();
+      let scaleWidth = 60;
+      try {
+        scaleWidth = this.chart.priceScale(side).width();
+      } catch {
+        /* older chart engine */
+      }
+      const onScale =
+        side === "left" ? x <= scaleWidth : x >= r.width - scaleWidth;
+      if (!onScale) return;
+      e.preventDefault();
+      this.openScaleMenu(e.clientX, e.clientY);
+    });
     this.makeMainSeries();
   }
 
@@ -545,17 +563,11 @@ export class ChartPane {
         secondsVisible: parseTf(this.cfg.tf).seconds < 60,
       },
     });
-    this.chart.priceScale("right").applyOptions({
-      mode: this.cfg.compare.length
-        ? LW.PriceScaleMode.Percentage
-        : this.cfg.log
-          ? LW.PriceScaleMode.Logarithmic
-          : LW.PriceScaleMode.Normal,
-    });
     this.renderCompare();
     this.renderIndicators();
     this.applyBarColors();
     this.drawings.update();
+    this.applyPriceScale();
     if (resetView && this.shown.length)
       this.chart.timeScale().setVisibleLogicalRange({
         from: Math.max(0, this.shown.length - 160),
@@ -647,12 +659,15 @@ export class ChartPane {
     // place. Removing series would delete their panes and abort a separator drag in progress.
     if (signature === this._indSignature && this.shown.length && this.updateIndicators()) return;
     this._indSignature = signature;
-    // Pane heights belong to the user: dragging a separator resizes an oscillator pane, so keep
-    // the sizes across the rebuild that every tick triggers.
+    // Pane sizes belong to the user: dragging a separator resizes an oscillator pane, so keep the
+    // split across the rebuild that every tick triggers. Stretch factors are the layout's own
+    // units (heights are derived from them), so restoring factors reproduces the exact split;
+    // setting pixel heights one pane at a time does not, because each call redistributes the
+    // difference across all the other panes.
     const oldPanes = this.chart.panes();
-    const oldSizes = oldPanes.map((p) => {
+    const oldFactors = oldPanes.map((p) => {
       try {
-        return { height: p.getHeight() };
+        return p.getStretchFactor();
       } catch {
         return null;
       }
@@ -773,10 +788,10 @@ export class ChartPane {
     // Restore the user's pane split whenever the pane count is unchanged. Only a new or removed
     // oscillator gets the default 1 : 0.28 ratio.
     const panes = this.chart.panes();
-    const sameCount = oldSizes.length === panes.length;
-    if (sameCount) this.queuePaneHeights(oldSizes.map((s) => s?.height));
+    const sameCount = oldFactors.length === panes.length;
+    if (sameCount) this.queuePaneFactors(oldFactors);
     else {
-      this.pendingPaneHeights = null;
+      this.pendingPaneFactors = null;
       panes.forEach((p, i) => {
         try {
           p.setStretchFactor(i === 0 ? 1 : 0.28);
@@ -1072,13 +1087,15 @@ export class ChartPane {
     this._legendRaf = requestAnimationFrame(() => {
       this._legendRaf = null;
       this.layoutLegends();
+      this.refreshLegendPad();
     });
   }
 
   // A pane that is re-created during a re-render only gets its final layout on the next frame;
-  // setting its height now would be overwritten. Wait two frames, then restore the user's split.
-  queuePaneHeights(heights) {
-    this.pendingPaneHeights = heights;
+  // touching it now would be overwritten. Wait two frames, then restore the user's split by
+  // putting back the stretch factors the layout had before the rebuild.
+  queuePaneFactors(factors) {
+    this.pendingPaneFactors = factors;
     if (this._paneRestoreRaf) cancelAnimationFrame(this._paneRestoreRaf);
     let passes = 0;
     const step = () => {
@@ -1087,15 +1104,18 @@ export class ChartPane {
         return;
       }
       this._paneRestoreRaf = null;
-      const target = this.pendingPaneHeights;
+      const target = this.pendingPaneFactors;
       if (!target) return;
       const panes = this.chart.panes();
-      for (let i = 1; i < panes.length && i < target.length; i++)
+      const usable = panes.length === target.length;
+      panes.forEach((pane, i) => {
         try {
-          if (target[i]) panes[i].setHeight(target[i]);
+          // A pane count change has no matching split to restore; fall back to the default ratio.
+          pane.setStretchFactor(usable && Number.isFinite(target[i]) ? target[i] : i === 0 ? 1 : 0.28);
         } catch {
           /* pane went away */
         }
+      });
       this.layoutLegends();
     };
     this._paneRestoreRaf = requestAnimationFrame(step);
@@ -1261,14 +1281,209 @@ export class ChartPane {
     };
     for (const pane of this.chart.panes()) {
       try {
-        apply(pane.priceScale("right"));
+        apply(pane.priceScale(this.scaleSide()));
         if (this.volume) apply(pane.priceScale("vol"));
       } catch {
         /* older chart engine without per-pane scales */
       }
     }
-    apply(this.chart.priceScale("right"));
+    apply(this.chart.priceScale(this.scaleSide()));
     if (this.volume) apply(this.chart.priceScale("vol"));
+    this.cfg.scaleAuto = true;
+    this.persistScale();
+  }
+
+  // ---------- price scale menu ----------
+  // Which side the price axis sits on. Series are moved too, so the axis that is hidden has no
+  // stray labels left behind.
+  scaleSide() {
+    return this.cfg.scaleSide === "left" ? "left" : "right";
+  }
+
+  // Regular / Percent / Indexed to 100 / Logarithmic. The toolbar's Log button still wins so the
+  // two stay in step, and a comparison chart defaults to percent as before.
+  scaleModeValue() {
+    if (this.cfg.log) return LW.PriceScaleMode.Logarithmic;
+    if (this.cfg.scaleMode === "indexed") return LW.PriceScaleMode.IndexedTo100;
+    if (this.cfg.scaleMode === "percent") return LW.PriceScaleMode.Percentage;
+    if (this.cfg.scaleMode === "regular") return LW.PriceScaleMode.Normal;
+    return this.cfg.compare.length ? LW.PriceScaleMode.Percentage : LW.PriceScaleMode.Normal;
+  }
+
+  allSeries() {
+    return [
+      this.main,
+      ...this.compareSeries.values(),
+      ...[...this.indSeries.values()].flat(),
+    ].filter(Boolean);
+  }
+
+  applyPriceScale() {
+    const side = this.scaleSide();
+    const mode = this.scaleModeValue();
+    const invertScale = !!this.cfg.invertScale;
+    try {
+      this.chart.applyOptions({
+        leftPriceScale: { visible: side === "left" },
+        rightPriceScale: { visible: side === "right" },
+      });
+      // Every pane has its own pair of scales (price + oscillator), so set them all.
+      for (const pane of this.chart.panes()) {
+        try {
+          pane.priceScale(side).applyOptions({ mode, invertScale });
+        } catch {
+          /* no such scale on this pane */
+        }
+      }
+      this.chart.priceScale(side).applyOptions({ mode, invertScale });
+      // New series default to the right axis, so move any that are on the wrong side. Checking
+      // first keeps a normal render from touching every series on every tick.
+      for (const s of this.allSeries()) {
+        try {
+          if (s.options().priceScaleId !== side) s.applyOptions({ priceScaleId: side });
+        } catch {
+          /* series went away mid-render */
+        }
+      }
+    } catch {
+      /* older chart engine */
+    }
+    this.refreshLegendPad();
+  }
+
+  // Keep the pane labels clear of the price axis. An axis that has only just been made visible has
+  // no width until the engine lays it out, so fall back to a typical width and measure again on the
+  // next frames. Also called when the chart is resized, where the axis width can change.
+  refreshLegendPad(retries = 3) {
+    let pad = 8;
+    let measured = true;
+    if (this.scaleSide() === "left") {
+      try {
+        pad = Math.round(this.chart.priceScale("left").width()) + 10;
+      } catch {
+        pad = 64;
+        measured = false;
+      }
+    }
+    if (pad !== this._legendPad) {
+      this.el.style.setProperty("--legend-left", `${pad}px`);
+      this._legendPad = pad;
+    }
+    if (!measured && retries > 0)
+      requestAnimationFrame(() => this.refreshLegendPad(retries - 1));
+  }
+
+  persistScale() {
+    this.app.persist();
+    this.app.syncToolbar?.();
+  }
+
+  openScaleMenu(clientX, clientY) {
+    this.closeScaleMenu();
+    const side = this.scaleSide();
+    let live = {};
+    try {
+      live = this.chart.priceScale(side).options();
+    } catch {
+      /* older chart engine */
+    }
+    const P = LW.PriceScaleMode;
+    const auto = live.autoScale !== false;
+    const invert = !!live.invertScale;
+    const mode = live.mode ?? P.Normal;
+    const tick = (on) => `<span class="tick">${on ? "✓" : ""}</span>`;
+    const radio = (on) => `<span class="tick">${on ? "●" : ""}</span>`;
+    // Percent is what a comparison chart uses by default, so show that as the active mode then.
+    const regular = mode === P.Normal && (!this.cfg.compare.length || !!this.cfg.scaleMode);
+    const percent = mode === P.Percentage;
+    const indexed = mode === P.IndexedTo100;
+    const log = mode === P.Logarithmic;
+    const menu = document.createElement("div");
+    menu.className = "scale-menu";
+    menu.setAttribute("role", "menu");
+    menu.innerHTML = `
+      <button type="button" role="menuitem" data-sm="auto">${tick(auto)}Auto (fits data to screen)</button>
+      <button type="button" role="menuitem" data-sm="invert">${tick(invert)}Invert scale</button>
+      <div class="scale-sep"></div>
+      <button type="button" role="menuitem" data-sm="regular">${radio(regular)}Regular</button>
+      <button type="button" role="menuitem" data-sm="percent">${radio(percent)}Percent</button>
+      <button type="button" role="menuitem" data-sm="indexed">${radio(indexed)}Indexed to 100</button>
+      <button type="button" role="menuitem" data-sm="log">${radio(log)}Logarithmic</button>
+      <div class="scale-sep"></div>
+      <button type="button" role="menuitem" data-sm="side">${tick(false)}${side === "left" ? "Move scale to right" : "Move scale to left"}</button>
+      <div class="scale-sep"></div>
+      <button type="button" role="menuitem" data-sm="settings">${tick(false)}More settings…</button>`;
+    menu.addEventListener("click", (e) => {
+      const item = e.target.closest("[data-sm]");
+      if (!item) return;
+      this.onScaleMenuItem(item.dataset.sm, { auto, invert });
+    });
+    document.body.appendChild(menu);
+    // Keep it on screen: the pointer is usually a few pixels from the right edge.
+    const rect = menu.getBoundingClientRect();
+    const x = Math.max(4, Math.min(clientX, window.innerWidth - rect.width - 4));
+    const y = Math.max(4, Math.min(clientY, window.innerHeight - rect.height - 4));
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    this._scaleMenu = menu;
+    const away = (ev) => {
+      if (!menu.contains(ev.target)) this.closeScaleMenu();
+    };
+    const key = (ev) => {
+      if (ev.key === "Escape") this.closeScaleMenu();
+    };
+    // Deferred so the very click that opened the menu does not close it again.
+    setTimeout(() => {
+      document.addEventListener("pointerdown", away);
+      document.addEventListener("keydown", key);
+    }, 0);
+    this._scaleMenuAway = away;
+    this._scaleMenuKey = key;
+  }
+
+  closeScaleMenu() {
+    if (this._scaleMenuAway) document.removeEventListener("pointerdown", this._scaleMenuAway);
+    if (this._scaleMenuKey) document.removeEventListener("keydown", this._scaleMenuKey);
+    this._scaleMenuAway = this._scaleMenuKey = null;
+    this._scaleMenu?.remove();
+    this._scaleMenu = null;
+  }
+
+  onScaleMenuItem(item, live) {
+    const side = this.scaleSide();
+    this.closeScaleMenu();
+    if (item === "auto") {
+      const on = !live.auto;
+      this.cfg.scaleAuto = on;
+      for (const pane of this.chart.panes()) {
+        try {
+          pane.priceScale(side).applyOptions({ autoScale: on });
+        } catch {
+          /* no such scale */
+        }
+      }
+      try {
+        this.chart.priceScale(side).applyOptions({ autoScale: on });
+      } catch {
+        /* no such scale */
+      }
+      this.persistScale();
+      this.app.toast(on ? "Price scale fits the data again" : "Price scale unlocked");
+      return;
+    }
+    if (item === "invert") {
+      this.cfg.invertScale = !live.invert;
+    } else if (item === "side") {
+      this.cfg.scaleSide = side === "left" ? "right" : "left";
+    } else if (item === "settings") {
+      this.app.openSettings();
+      return;
+    } else if (["regular", "percent", "indexed", "log"].includes(item)) {
+      this.cfg.log = item === "log";
+      this.cfg.scaleMode = item === "log" ? undefined : item;
+    } else return;
+    this.persistScale();
+    this.render(false);
   }
 
   // ---------- live updates ----------

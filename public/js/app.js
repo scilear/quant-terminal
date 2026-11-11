@@ -325,6 +325,8 @@ class App {
     $("#alertBtn").onclick = () => this.panels.openAlertDialog();
     $("#logBtn").onclick = () => {
       this.active.cfg.log = !this.active.cfg.log;
+      // The scale has one mode at a time: switching the log axis off returns it to regular.
+      if (!this.active.cfg.log) this.active.cfg.scaleMode = undefined;
       this.active.render(false);
       this.syncToolbar();
       this.persist();
